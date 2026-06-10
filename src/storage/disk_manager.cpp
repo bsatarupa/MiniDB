@@ -1,0 +1,122 @@
+#include "minidb/storage/disk_manager.h"
+#include <cstdint>
+#include <ios>
+#include <iosfwd>
+#include <limits>
+#include <mutex>
+#include <stdexcept>
+#include <fstream>
+
+//constructor does not need mutex locking because the object has not been published to other threads yet
+DiskManager::DiskManager(const std::string& file_path) {
+
+    //Try to open the DB file for both reading and writing
+    file_stream_.open(file_path, std::ios::in | std::ios::out | std::ios::binary);
+    if (!file_stream_.is_open()) {
+        file_stream_.clear(); //clear the stream's error flags, if opening fails
+
+        //Try to create the file using a temporary output stream, if it does not exist
+        std::ofstream create_file(file_path, std::ios::out | std::ios::binary);
+        if (!create_file) {
+            throw std::runtime_error("Failed to create file: " + file_path);
+        }
+
+        //closethe temporary output stream
+        create_file.close();
+
+        //reopen the file for both reading and writing
+        file_stream_.open(file_path, std::ios::in | std::ios::out | std::ios::binary);
+        //if reopening fails, throw an exception
+        if (!file_stream_.is_open()) {
+            throw std::runtime_error("Failed to open file: " + file_path);
+        }
+    }
+}
+
+//convert page id to byte offset in the file
+//page_offset() does not need its own lock as it is called from a public method that already holds the mutex
+std::streamoff DiskManager::page_offset(std::uint64_t page_id) const {
+
+    //largest possible offset representable by streamoff
+    const auto max_offset = std::numeric_limits<std::streamoff>::max();
+    if (page_id > static_cast<std::uint64_t>(max_offset) / PAGE_SIZE) {
+        throw std::out_of_range("Page ID is too large");
+    }
+
+    return static_cast<std::streamoff>(page_id * PAGE_SIZE);
+}
+
+void DiskManager::write_page(std::uint64_t page_id, const Page& bytes) {
+
+    std::lock_guard<std::mutex> lock(mtx);
+
+    //clear any previous error flags on the stream
+    file_stream_.clear();
+
+    file_stream_.seekp(page_offset(page_id), std::ios::beg);
+    if (!file_stream_) {
+        throw std::runtime_error("Failed to seek before writing page");
+    }
+
+    file_stream_.write(reinterpret_cast<const char *>(bytes.data()),
+                        static_cast<std::streamsize>(PAGE_SIZE));
+
+    if (!file_stream_) {
+        throw std::runtime_error("Failed to write database page");
+    }
+}
+
+void DiskManager::flush() {
+
+    std::lock_guard<std::mutex> lock(mtx);
+
+    //ask the stream to push buffered output to underlying file-writing system
+    //no guarantee that it will reach a durable physical storage; use fsync()
+    file_stream_.flush();
+    if (!file_stream_) {
+        throw std::runtime_error("Failed to flush database file");
+    }
+}
+
+DiskManager::Page DiskManager::read_page(std::uint64_t page_id) {
+
+    std::lock_guard<std::mutex> lock(mtx);
+
+    file_stream_.clear();
+
+    file_stream_.seekg(page_offset(page_id), std::ios::beg);
+    if (!file_stream_) {
+        throw std::runtime_error("Failed to seek before reading page");
+    }
+
+    //create a 4096-bytes page buffer to read file content
+    Page bytes{};
+    file_stream_.read(reinterpret_cast<char *>(bytes.data()),
+                static_cast<std::streamsize>(PAGE_SIZE));
+
+    if (file_stream_.gcount() != static_cast<std::streamsize>(PAGE_SIZE)) {
+        throw std::runtime_error("Could not read a complete database page"); 
+    }
+
+    return bytes;
+}
+
+//tells PageManager whether the database (file) is new (and empty) and not an existing DB
+bool DiskManager::is_empty() {
+
+    std::lock_guard<std::mutex> lock(mtx);
+
+    file_stream_.clear();
+
+    file_stream_.seekg(0, std::ios::end); //move read position to the end of file
+    if (!file_stream_) {
+        throw std::runtime_error("Failed to determine DB file size");
+    }
+
+    const auto size = file_stream_.tellg(); //return current input position (i.e., file size)
+    if (size == std::streampos(-1)) { //position can't be determined
+        throw std::runtime_error("Failed to determine DB file size");
+    }
+
+    return size == std::streampos(0); //returns true if file is zero byte long
+}
