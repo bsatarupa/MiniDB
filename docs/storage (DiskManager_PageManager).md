@@ -116,7 +116,7 @@ The magic number identifies a MiniDB database file. The format version allows fu
 
 ### Data Page Layout
 
-Every data page has a 16-byte common header followed by a 4080-byte payload.
+Every data page has a 24-byte common header followed by a 4072-byte payload.
 
 | Field | Offset | Size |
 |---|---:|---:|
@@ -124,7 +124,8 @@ Every data page has a 16-byte common header followed by a 4080-byte payload.
 | Page type | 8 | 2 bytes |
 | Format version | 10 | 2 bytes |
 | Flags | 12 | 4 bytes |
-| Payload | 16 | 4080 bytes |
+| lsn | 16 | 8 bytes |
+| Payload | 24 | 4072 bytes |
 
 ### Page Types
 

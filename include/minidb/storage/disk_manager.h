@@ -6,9 +6,9 @@
 #include <ios>
 #include <array>
 #include <cstddef>
-#include <cstdint>
-#include <fstream>
 #include <string>
+
+#include <mutex>
 /*
 1. DiskManager handles raw 4KB I/O RDs/WRs using std::fstream
 2. owns and manages DB file handle
@@ -19,10 +19,14 @@
 6. Disk I/O failures must be reported and handled explicitly
 */
 class DiskManager {
+
+private:
     std::fstream file_stream_;
+    std::mutex mtx;
 
     //calculates page's byte position in the file
     std::streamoff page_offset(std::uint64_t page_id) const;
+
 public:
     static constexpr std::size_t PAGE_SIZE = 4096;
 
@@ -31,6 +35,7 @@ public:
     
     explicit DiskManager(const std::string& file_path);
 
+    //Copy constructor and copy assignment operator are deleted to prevent accidental duplicated ownership
     DiskManager(const DiskManager&) = delete;
     DiskManager& operator=(const DiskManager&) = delete;
 

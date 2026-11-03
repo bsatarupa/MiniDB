@@ -1,16 +1,19 @@
-#include "minidb/storage/page_manager.h"
+#include "minidb/storage/database_page_manager.h"
 #include "minidb/storage/disk_manager.h"
 #include "minidb/storage/page_format.h"
 #include <cstdint>
 #include <ios>
 #include <limits>
+#include <mutex>
 #include <stdexcept>
 
+//all accesses(read_page()/write_page()) to next_page_id must use the same mutex
 namespace minidb::storage {
 
     //either initialize a new DB or restore allocation metadata from an existing DB
-    PageManager::PageManager(DiskManager &disk) : disk(disk), next_page_id(1) {
+    DatabasePageManager::DatabasePageManager(DiskManager &disk) : disk(disk), next_page_id(1) {
 
+        //constructor does not need mutex locking because the object has not been published to other threads yet
         using namespace format;
 
         if (disk.is_empty()) {
@@ -31,7 +34,9 @@ namespace minidb::storage {
 
     //allocate_page() : reserves a new pageID for upcoming write operation
     //write_page() : updates an already allocated page
-    std::uint64_t PageManager::allocate_page() {
+    std::uint64_t DatabasePageManager::allocate_page() {
+
+        std::lock_guard<std::mutex> lock(mtx);  //locks PageManager's mutex
 
         using namespace format;
 
@@ -40,8 +45,8 @@ namespace minidb::storage {
         }
 
         const std::uint64_t page_id = next_page_id;
-
         //PageType::Free - yet to take any ownership as a B-tree or LSM page
+        //write current page data and next page metadata to disk
         const auto page = make_data_page(page_id, PageType::FREE);
         disk.write_page(page_id, page);
 
@@ -49,15 +54,16 @@ namespace minidb::storage {
         const auto metadata = make_metadata_page(updated_next_page_id);
         disk.write_page(META_PAGE_ID, metadata);
 
-        disk.flush();
+        disk.flush();   //flushes the file
 
-        //next_page_id must NOT be updated before the metadata updation succeeds.
+        //next_page_id must NOT be updated before the metadata updation succeeds
         next_page_id = updated_next_page_id;
-
-        return page_id;
+        return page_id; //pageID of allocated page
     }
 
-    DiskManager::Page PageManager::read_page(std::uint64_t page_id) {
+    DiskManager::Page DatabasePageManager::read_page(std::uint64_t page_id) {
+
+        std::lock_guard<std::mutex> lock(mtx);
 
         using namespace format;
 
@@ -67,19 +73,21 @@ namespace minidb::storage {
         }
     
         auto page = disk.read_page(page_id);
-        validate_data_page(page, page_id);
+        validate_data_page(page, page_id); //validate pageID, pageType, formatVersion after reading
         return page;
     }
 
-    void PageManager::write_page(std::uint64_t page_id, const DiskManager::Page &page) {
+    void DatabasePageManager::write_page(std::uint64_t page_id, const DiskManager::Page &page) {
 
+        std::lock_guard<std::mutex> lock(mtx);
+        
         using namespace format;
 
         if (page_id == META_PAGE_ID || page_id >= next_page_id) {
             throw std::out_of_range("Page ID is not allocated");
         }
     
-        validate_data_page(page, page_id);
+        validate_data_page(page, page_id); //validate pageID, pageType, formatVersion before writing
         disk.write_page(page_id, page);
 
         disk.flush();

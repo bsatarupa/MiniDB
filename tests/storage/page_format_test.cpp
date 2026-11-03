@@ -16,16 +16,16 @@ void test_page_layout_constants() {
         throw std::runtime_error("Page size must be 4096 bytes");
     }
 
-    if (PAGE_HEADER_SIZE != 16) {
+    if (PAGE_HEADER_SIZE != 24) {
         throw std::runtime_error("Page header must be 16 bytes");
     }
 
-    if (PAGE_PAYLOAD_SIZE != 4080) {
+    if (PAGE_PAYLOAD_SIZE != 4072) {
         throw std::runtime_error("Page payload must be 4080 bytes");
     }
 
     //verifying most significant 4-bytes offset of page header
-    if (PAGE_FLAGS_OFFSET + sizeof(std::uint32_t) != PAGE_HEADER_SIZE) {
+    if (PAGE_LSN_OFFSET + sizeof(std::uint64_t) != PAGE_HEADER_SIZE) {
         throw std::runtime_error("Dta page header offsets are inconsistent");
     }
 
@@ -54,7 +54,7 @@ void test_page_type_values() {
 void test_format_version_and_magic() {
     using namespace minidb::storage::format;
 
-    if (FORMAT_VERSION != 1) {
+    if (FORMAT_VERSION != 2) {
         throw std::runtime_error("Unexpected format version");
     }
 
@@ -240,6 +240,11 @@ void test_data_page_round_trip() {
         throw std::runtime_error("Data page flags mismatch");
     }
 
+    //verify initial page lsn
+    if (read_page_lsn(page) != INVALID_PAGE_LSN) {
+        throw std::runtime_error("Data page PageLSN mismatch");
+    }
+
     for (std::size_t i = PAGE_HEADER_SIZE; i < PAGE_SIZE; ++i) {
         if (page[i] != std::byte{0}) {
             throw std::runtime_error("Data page payload not zero-initialized");
@@ -339,6 +344,41 @@ void test_metadata_type_rejected_for_data_page() {
     }
 }
 
+void test_page_lsn_initialization() {
+    using namespace minidb::storage::format;
+
+    const auto page = make_data_page(42, PageType::BTREE_LEAF);
+
+    if (read_page_lsn(page) != INVALID_PAGE_LSN) {
+        throw std::runtime_error("Initial PageLSN mismatch");
+    }
+}
+
+void test_page_lsn_write_read() {
+    using namespace minidb::storage::format;
+
+    auto page = make_data_page(42, PageType::BTREE_LEAF);
+
+    constexpr std::uint64_t expected_lsn = 12345;
+
+    write_page_lsn(page, expected_lsn);
+
+    if (read_page_lsn(page) != expected_lsn) {
+        throw std::runtime_error("PageLSN read/write failed");
+    }
+}
+
+void test_page_lsn_zero_is_valid() {
+    using namespace minidb::storage::format;
+
+    auto page = make_data_page(42, PageType::BTREE_LEAF);
+
+    write_page_lsn(page, 0);
+
+    if (read_page_lsn(page) != 0) {
+        throw std::runtime_error("PageLSN zero should be valid");
+    }
+}
 
 } //end of namespace
 
@@ -364,6 +404,10 @@ int main() {
         test_unknown_data_page_type_rejected();
         test_unsupported_data_page_version_rejected();
         test_metadata_type_rejected_for_data_page();
+
+        test_page_lsn_initialization();
+        test_page_lsn_write_read();
+        test_page_lsn_zero_is_valid();
 
         std::cout << "\nAll page-format tests passed.\n";
         return 0;

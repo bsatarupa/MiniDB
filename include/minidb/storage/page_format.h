@@ -27,12 +27,17 @@ namespace minidb::storage::format {
     inline constexpr std::size_t PAGE_TYPE_OFFSET = 8;
     inline constexpr std::size_t PAGE_VERSION_OFFSET = 10;
     inline constexpr std::size_t PAGE_FLAGS_OFFSET = 12;
+    inline constexpr std::size_t PAGE_LSN_OFFSET = 16;
 
-    inline constexpr std::size_t PAGE_HEADER_SIZE = 16;
+    inline constexpr std::size_t PAGE_HEADER_SIZE = 24;
     inline constexpr std::size_t PAGE_PAYLOAD_SIZE = PAGE_SIZE - PAGE_HEADER_SIZE;
 
-    //On-disk format version
-    inline constexpr std::uint16_t FORMAT_VERSION = 1;
+    //Invalid PageLSN sentinel; since LSN_0 is a valid WAL record
+    inline constexpr std::uint64_t INVALID_PAGE_LSN = std::numeric_limits<std::uint64_t>::max();
+
+    //On-disk format version:
+    //Format version: (1 -> 2) - added 8 bytes of lsn to page_header starting at page_lsn_offset = 16
+    inline constexpr std::uint16_t FORMAT_VERSION = 2; 
 
     //4-byte identifier for META_MAGIC: ASCII "MNDB" encoded in little-Endian format
     //META_MAGIC is used to identify a metadata page while opening a database.
@@ -48,29 +53,32 @@ namespace minidb::storage::format {
     };
 
     //convert interger to buffer bytes [LSB to MSB]
-    template <typename UInt>
-    void write_le(std::byte *destination, UInt value) {
-        static_assert(std::is_unsigned_v<UInt>, 
-                        "write_le requires an unsigned integer type");
+    template <typename Int>
+    void write_le(std::byte *destination, Int value) {
+        static_assert(std::is_integral_v<Int>, "write_le requires an integral type");
 
-        for (std::size_t i = 0; i < sizeof(UInt); i++) {
-            destination[i] = static_cast<std::byte>(value & 0xFFu); //fetch only LSB
+        using UInt = std::make_unsigned_t<Int>;
+        UInt bits = static_cast<UInt>(value);
 
-            value >>= 8;    //for next iteration
+        for (std::size_t i = 0; i < sizeof(Int); i++) {
+            destination[i] = static_cast<std::byte>(bits & 0xFF); //fetch only LSB
+
+            bits >>= 8;    //for next iteration
         }
     }
 
     //convert buffer bytes [LSB to MSB] to respective integer
-    template <typename UInt>
-    UInt read_le(const std::byte *source) {
-        static_assert(std::is_unsigned_v<UInt>,
-                        "read_le requires an unsigned integer type");
+    template <typename Int>
+    Int read_le(const std::byte *source) {
+        static_assert(std::is_integral_v<Int>, "read_le requires an integral type");
 
-        UInt value = 0;
-        for (std::size_t i = 0; i < sizeof(UInt); i++) {
-            value |= static_cast<UInt>(std::to_integer<unsigned int>(source[i])) << (i * 8); 
+        using UInt = std::make_unsigned_t<Int>;
+        UInt bits = 0;
+
+        for (std::size_t i = 0; i < sizeof(Int); i++) {
+            bits |= static_cast<UInt>(std::to_integer<unsigned int>(source[i])) << (i * 8); 
         }
-        return value;
+        return bits;
     }
 
     //metadata-page(Page_0) serialization and validation - to remember metadata allocation state after reopening the database
@@ -131,6 +139,7 @@ namespace minidb::storage::format {
         write_le<uint16_t>(page.data() + PAGE_TYPE_OFFSET, static_cast<std::uint16_t>(page_type));
         write_le<uint16_t>(page.data() + PAGE_VERSION_OFFSET, FORMAT_VERSION);
         write_le<uint32_t>(page.data() + PAGE_FLAGS_OFFSET, page_flags);
+        write_le<uint64_t>(page.data() + PAGE_LSN_OFFSET, INVALID_PAGE_LSN);
 
         return page;
     }
@@ -170,6 +179,74 @@ namespace minidb::storage::format {
         if (version != FORMAT_VERSION) {
             throw std::runtime_error("Unsupported data page version");
         }
+    }
+
+    //Index metadata header offsets @page_0
+    inline constexpr std::size_t INDEX_META_MAGIC_OFFSET = 0;
+    inline constexpr std::size_t INDEX_META_VERSION_OFFSET = 4;
+    inline constexpr std::size_t INDEX_META_ROOT_PAGE_ID_OFFSET = 6;
+    inline constexpr std::size_t INDEX_META_NEXT_PAGE_ID_OFFSET = 14;
+
+    inline constexpr std::uint32_t INDEX_META_MAGIC = 0x58444E4D;
+    inline constexpr std::uint64_t INVALID_PAGE_ID = std::numeric_limits<std::uint64_t>::max();
+
+    inline RawPage make_index_metadata_page(std::uint64_t root_page_id = INVALID_PAGE_ID,
+                                            std::uint64_t next_page_id = 1) { //next_page_id = 0 is never accepted
+        RawPage page{};
+
+        write_le<std::uint32_t>(page.data() + INDEX_META_MAGIC_OFFSET, INDEX_META_MAGIC);
+        write_le<std::uint16_t>(page.data() + INDEX_META_VERSION_OFFSET, FORMAT_VERSION);
+        write_le<std::uint64_t>(page.data() + INDEX_META_ROOT_PAGE_ID_OFFSET, root_page_id);
+        write_le<std::uint64_t>(page.data() + INDEX_META_NEXT_PAGE_ID_OFFSET, next_page_id);
+
+        return page;
+    }
+
+    //validate index metapage and recover its root_page_id and next_page_id
+    inline void read_index_metadata_page(
+        const RawPage& page,
+        std::uint64_t& root_page_id,
+        std::uint64_t& next_page_id) {
+    
+        if (read_le<std::uint32_t>(
+                page.data() + INDEX_META_MAGIC_OFFSET) != INDEX_META_MAGIC) {
+            throw std::runtime_error("Invalid index metadata magic");
+        }
+    
+        if (read_le<std::uint16_t>(
+                page.data() + INDEX_META_VERSION_OFFSET) != FORMAT_VERSION) {
+            throw std::runtime_error("Unsupported index format version");
+        }
+    
+        root_page_id = read_le<std::uint64_t>(
+            page.data() + INDEX_META_ROOT_PAGE_ID_OFFSET);
+    
+        next_page_id = read_le<std::uint64_t>(
+            page.data() + INDEX_META_NEXT_PAGE_ID_OFFSET);
+
+        if (next_page_id == 0 || next_page_id == INVALID_PAGE_ID) {
+            throw std::runtime_error("Invalid next pageID in Index Metadata");
+        }
+
+        if (root_page_id != INVALID_PAGE_ID &&
+            (root_page_id == 0 || root_page_id >= next_page_id)) {
+            throw std::runtime_error("Invalid root pageID in Index Metadata");
+        }
+
+        const auto max_page_id = static_cast<std::uint64_t>
+                                                    (std::numeric_limits<std::streamoff>::max() / PAGE_SIZE);
+        if (next_page_id > max_page_id) {
+            throw std::runtime_error("Next pageID exceeds the file-offset range");
+        }
+    }
+
+    //extract page lsn
+    inline std::uint64_t read_page_lsn(const RawPage &page) {
+        return read_le<std::uint64_t>(page.data() + PAGE_LSN_OFFSET);
+    }
+
+    inline void write_page_lsn(RawPage &page, std::uint64_t lsn) {
+        write_le(page.data() + PAGE_LSN_OFFSET, lsn);
     }
 
 } //namespace minidb::storage::format
