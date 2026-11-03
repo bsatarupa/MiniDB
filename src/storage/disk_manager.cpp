@@ -3,9 +3,11 @@
 #include <ios>
 #include <iosfwd>
 #include <limits>
+#include <mutex>
 #include <stdexcept>
 #include <fstream>
 
+//constructor does not need mutex locking because the object has not been published to other threads yet
 DiskManager::DiskManager(const std::string& file_path) {
 
     //Try to open the DB file for both reading and writing
@@ -32,6 +34,7 @@ DiskManager::DiskManager(const std::string& file_path) {
 }
 
 //convert page id to byte offset in the file
+//page_offset() does not need its own lock as it is called from a public method that already holds the mutex
 std::streamoff DiskManager::page_offset(std::uint64_t page_id) const {
 
     //largest possible offset representable by streamoff
@@ -44,6 +47,8 @@ std::streamoff DiskManager::page_offset(std::uint64_t page_id) const {
 }
 
 void DiskManager::write_page(std::uint64_t page_id, const Page& bytes) {
+
+    std::lock_guard<std::mutex> lock(mtx);
 
     //clear any previous error flags on the stream
     file_stream_.clear();
@@ -63,6 +68,8 @@ void DiskManager::write_page(std::uint64_t page_id, const Page& bytes) {
 
 void DiskManager::flush() {
 
+    std::lock_guard<std::mutex> lock(mtx);
+
     //ask the stream to push buffered output to underlying file-writing system
     //no guarantee that it will reach a durable physical storage; use fsync()
     file_stream_.flush();
@@ -72,6 +79,8 @@ void DiskManager::flush() {
 }
 
 DiskManager::Page DiskManager::read_page(std::uint64_t page_id) {
+
+    std::lock_guard<std::mutex> lock(mtx);
 
     file_stream_.clear();
 
@@ -94,6 +103,8 @@ DiskManager::Page DiskManager::read_page(std::uint64_t page_id) {
 
 //tells PageManager whether the database (file) is new (and empty) and not an existing DB
 bool DiskManager::is_empty() {
+
+    std::lock_guard<std::mutex> lock(mtx);
 
     file_stream_.clear();
 

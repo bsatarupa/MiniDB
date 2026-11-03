@@ -1,12 +1,11 @@
 #include "minidb/storage/page_format.h"
-#include "minidb/storage/page_manager.h"
+#include "minidb/storage/database_page_manager.h"
 #include "minidb/storage/disk_manager.h"
 
 #include <cstddef>
 #include <cstdint>
 #include <fstream>
 #include <iostream>
-#include <algorithm>
 #include <exception>
 #include <limits>
 #include <stdexcept>
@@ -18,7 +17,7 @@ namespace {
         std::remove(path.c_str());  //delete file if already exists at specified path
 
         DiskManager disk(path);
-        minidb::storage::PageManager manager(disk);
+        minidb::storage::DatabasePageManager manager(disk);
 
         const auto first = manager.allocate_page();
         const auto second = manager.allocate_page();
@@ -37,7 +36,7 @@ namespace {
 
         {
             DiskManager disk(path);
-            minidb::storage::PageManager manager(disk);
+            minidb::storage::DatabasePageManager manager(disk);
 
             if (manager.allocate_page() != 1) {
                 throw std::runtime_error("First allocated page ID should be 1");
@@ -51,7 +50,7 @@ namespace {
         //reopening DB
         {
             DiskManager disk(path);
-            minidb::storage::PageManager manager(disk);
+            minidb::storage::DatabasePageManager manager(disk);
 
             if (manager.allocate_page() != 3) {
                 throw std::runtime_error("Allocation Counter did not persist after reopening");
@@ -70,7 +69,7 @@ namespace {
 
         {
             DiskManager disk(path);
-            minidb::storage::PageManager manager(disk);
+            minidb::storage::DatabasePageManager manager(disk);
 
             const auto page_id = manager.allocate_page();
             auto page = make_data_page(page_id, PageType::BTREE_LEAF);
@@ -93,7 +92,7 @@ namespace {
         {
             //create a fresh DB file and PageManager initializes its allocation state
             DiskManager disk(path);
-            minidb::storage::PageManager manager(disk);
+            minidb::storage::DatabasePageManager manager(disk);
     
             bool rejected = false;
             try {
@@ -119,7 +118,7 @@ namespace {
     
         {   //create a fresh DB file and PageManager initializes its allocation state
             DiskManager disk(path);
-            minidb::storage::PageManager manager(disk);
+            minidb::storage::DatabasePageManager manager(disk);
     
             const auto page_id = manager.allocate_page();
     
@@ -158,7 +157,7 @@ namespace {
         bool rejected = false;
         try {
                 DiskManager disk(path);
-                minidb::storage::PageManager manager(disk); 
+                minidb::storage::DatabasePageManager manager(disk); 
                 //PageManager fails to read 4KB metadata page (page_0) from the existing 1byte file
                 //for any new file (size = 0), PageManager first writes a 4KB metadata page; for existing files this step is skipped.
         } catch (const std::exception &) {
@@ -191,7 +190,7 @@ namespace {
         bool rejected = false;
         try {
                 DiskManager disk(path);
-                minidb::storage::PageManager manager(disk); 
+                minidb::storage::DatabasePageManager manager(disk); 
                 
         } catch (const std::exception &) {
                 rejected = true;
